@@ -1,9 +1,12 @@
 import React, { useEffect } from 'react';
-import { socket } from './socket'
+import { motion, AnimatePresence } from 'framer-motion';
+import { Upload, Crop, Check } from 'lucide-react';
+import { socket } from './socket';
+import { Progress } from './components/Progress';
 
 export default function VideoCropper() {
   const [position, setPosition] = React.useState({ x: 0, y: 0 });
-  const [size, setSize] = React.useState({ width: 208, height: 256 }); // w-52 = 208px, h-64 = 256px
+  const [size, setSize] = React.useState({ width: 208, height: 256 });
   const [isDragging, setIsDragging] = React.useState(false);
   const [isResizing, setIsResizing] = React.useState(false);
   const [dragStart, setDragStart] = React.useState({ x: 0, y: 0 });
@@ -14,44 +17,67 @@ export default function VideoCropper() {
   const [isVideoUploaded, setIsVideoUploaded] = React.useState(false);
   const [nameOfUploadedVideo, setnameOfUploadedVideo] = React.useState(null);
   const [cropProgress, setCropProgress] = React.useState(0);
-
-  useEffect(() => {
-    socket.on('cropping-progress', ({ progress }) => {
-      setCropProgress(progress)
-    })
-    return () => {
-      socket.off("cropping-progress");
-    };
-  }, [])
-
+  const [dragOver, setDragOver] = React.useState(false);
+  const [error, setError] = React.useState(null);
 
   const boxRef = React.useRef(null);
   const videoRef = React.useRef(null);
-
+  const fileInputRef = React.useRef(null);
 
   useEffect(() => {
+    socket.on('cropping-progress', ({ progress }) => {
+      setCropProgress(progress);
+      if (progress === 100) {
+        showNotification('Video cropped successfully!');
+      }
+    });
+    return () => {
+      socket.off("cropping-progress");
+    };
+  }, []);
 
-  }, [])
-
-
-  const handleMouseDown = (e, type, corner = '') => {
-    e.stopPropagation();
-    if (type === 'drag') {
-      setIsDragging(true);
-      setDragStart({
-        x: e.clientX - position.x,
-        y: e.clientY - position.y
-      });
-    } else if (type === 'resize') {
-      setIsResizing(true);
-      setResizeCorner(corner);
-      setDragStart({
-        x: e.clientX,
-        y: e.clientY
-      });
+  const showNotification = (message, isError = false) => {
+    if (isError) {
+      setError(message);
+      setTimeout(() => setError(null), 3000);
+    } else {
+      const notification = document.createElement('div');
+      notification.className = 'fixed bottom-4 right-4 bg-zinc-800 text-white px-4 py-2 rounded-lg shadow-lg transform transition-all duration-300';
+      notification.textContent = message;
+      document.body.appendChild(notification);
+      setTimeout(() => {
+        notification.style.opacity = '0';
+        setTimeout(() => notification.remove(), 300);
+      }, 2700);
     }
   };
 
+  // ... keep existing code (handleMouseMove, handleMouseUp, getDimensions functions)
+  const getDimensions = () => {
+    if (videoRef.current) {
+      const videoWidth = videoRef.current.videoWidth;
+      const videoHeight = videoRef.current.videoHeight;
+      const displayWidth = videoRef.current.offsetWidth;
+      const displayHeight = videoRef.current.offsetHeight;
+
+      // Calculate scaling factors
+      const scaleX = videoWidth / displayWidth;
+      const scaleY = videoHeight / displayHeight;
+
+      // Calculate dimensions relative to original video size
+      const dimensions = {
+        x: Math.round(position.x * scaleX),
+        y: Math.round(position.y * scaleY),
+        width: Math.round(size.width * scaleX),
+        height: Math.round(size.height * scaleY)
+      };
+      return dimensions;
+    }
+  };
+  const handleMouseUp = () => {
+    setIsDragging(false);
+    setIsResizing(false);
+  };
   const handleMouseMove = (e) => {
     const containerRect = e.currentTarget.getBoundingClientRect();
 
@@ -109,160 +135,282 @@ export default function VideoCropper() {
       }
     }
   };
-
-  const handleMouseUp = () => {
-    setIsDragging(false);
-    setIsResizing(false);
-  };
-
-  const getDimensions = () => {
-    if (videoRef.current) {
-      const videoWidth = videoRef.current.videoWidth;
-      const videoHeight = videoRef.current.videoHeight;
-      const displayWidth = videoRef.current.offsetWidth;
-      const displayHeight = videoRef.current.offsetHeight;
-
-      // Calculate scaling factors
-      const scaleX = videoWidth / displayWidth;
-      const scaleY = videoHeight / displayHeight;
-
-      // Calculate dimensions relative to original video size
-      const dimensions = {
-        x: Math.round(position.x * scaleX),
-        y: Math.round(position.y * scaleY),
-        width: Math.round(size.width * scaleX),
-        height: Math.round(size.height * scaleY)
-      };
-      return dimensions;
+  const handleMouseDown = (e, type, corner = '') => {
+    e.stopPropagation();
+    if (type === 'drag') {
+      setIsDragging(true);
+      setDragStart({
+        x: e.clientX - position.x,
+        y: e.clientY - position.y
+      });
+    } else if (type === 'resize') {
+      setIsResizing(true);
+      setResizeCorner(corner);
+      setDragStart({
+        x: e.clientX,
+        y: e.clientY
+      });
     }
   };
-  const Corner = ({ position, cursor, corner }) => (
-    <div
-      className={`absolute w-4 h-4 border-2 border-white cursor-${cursor} z-10`}
-      style={{ ...position }}
-      onMouseDown={(e) => handleMouseDown(e, 'resize', corner)}
-    />
-  );
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragLeave = () => {
+    setDragOver(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('video/')) {
+      handleFileUpload(file);
+    } else {
+      showNotification('Please upload a valid video file', true);
+    }
+  };
+
+  const handleFileUpload = (file) => {
+    socket.connect();
+    setFilename(file.name);
+    const formData = new FormData();
+    formData.append("video", file);
+
+    showNotification('Uploading video...');
+
+    fetch('http://localhost:3000/api/upload', {
+      method: 'POST',
+      body: formData
+    })
+      .then(res => res.json())
+      .then(({ error, filename }) => {
+        if (!error) {
+          setIsVideoUploaded(true);
+          setnameOfUploadedVideo(filename);
+          showNotification('Video uploaded successfully!');
+        } else {
+          throw new Error('Upload failed');
+        }
+      })
+      .catch(() => {
+        showNotification('Failed to upload video', true);
+      });
+  };
+
+  const submitHandler = (e) => {
+    e.preventDefault();
+    const input = e.target;
+    const file = (input[0]).files?.[0];
+    if (file) {
+      handleFileUpload(file);
+    }
+  };
+
   const CropTheVideo = () => {
-    setIsCropping(true)
+    if (!nameOfUploadedVideo) return;
+
+    setIsCropping(true);
+    showNotification('Cropping video...');
+
     fetch('http://localhost:3000/api/crop', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({ filename: nameOfUploadedVideo, dimensions: getDimensions(), socketId: socket.id })
-    }).then(res => res.json()).then(({ error }) => {
-      if (!error) {
-        setIsCropped(true)
-      }
     })
-  }
+      .then(res => res.json())
+      .then(({ error }) => {
+        if (!error) {
+          setIsCropped(true);
+          showNotification('Video processed successfully!');
+        } else {
+          throw new Error('Cropping failed');
+        }
+      })
+      .catch(() => {
+        showNotification('Failed to process video', true);
+      });
+  };
 
-  const submitHandler = (e) => {
-    e.preventDefault()
-    socket.connect()
-    const video = e.target[0].files[0]
-    setFilename(video.name)
-    const formData = new FormData();
-    formData.append("video", video);
+  // ... keep existing code (rest of the JSX remains the same, removing shadcn references)
 
-    fetch('http://localhost:3000/api/upload', {
-      method: 'POST',
-      body: formData
-    }).then(res => res.json()).then(({ error, filename }) => {
-      if (!error) {
-        console.log(error, filename);
-        setIsVideoUploaded(true)
-        setnameOfUploadedVideo(filename)
-      }
-    })
-  }
   return (
-    <div className="min-h-screen min-w-screen bg-black flex flex-col justify-center items-center">
-      {
-        isCropping &&
-        <p className='text-3xl text-white mb-12'>Cropping : {cropProgress}%</p>
-      }
-      <form encType="multipart/form-data"
-        onSubmit={submitHandler}>
-        {
-          !isVideoUploaded &&
-          <input
-            type="file"
-            name='video'
-            accept="image/*,video/*"
-            className="border border-white text-white p-2 rounded-md cursor-pointer"
-          />
-        }
-        <div
-          className="relative"
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleMouseUp}
+    <div className="min-h-screen bg-gradient-to-b from-zinc-900 to-black p-6 md:p-12">
+      <div className="max-w-6xl mx-auto">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center mb-12"
         >
-          {
-            isVideoUploaded &&
-            <>
-              <video
-                ref={videoRef}
-                controls
-                width="1000"
-              >
-                <source src={`/uploads/${nameOfUploadedVideo}`} type="video/mp4" />
-                Your browser does not support the video tag.
-              </video>
+          <h1 className="text-4xl md:text-5xl font-bold text-white mb-4">Video Cropper</h1>
+          <p className="text-zinc-400 text-lg">Upload your video and crop it to your desired dimensions</p>
+        </motion.div>
 
+        {error && (
+          <div className="mb-4 bg-red-500/10 border border-red-500/50 text-red-500 px-4 py-2 rounded-lg">
+            {error}
+          </div>
+        )}
+
+        {isCropping && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="mb-8"
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-white">Processing video</span>
+              <span className="text-white">{cropProgress}%</span>
+            </div>
+            <Progress value={cropProgress} />
+          </motion.div>
+        )}
+
+        <AnimatePresence mode="wait">
+          {!isVideoUploaded ? (
+            <motion.div
+              key="upload"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="relative"
+            >
+              <form
+                onSubmit={submitHandler}
+                className="flex flex-col items-center"
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
+                <motion.div
+                  animate={{
+                    scale: dragOver ? 1.02 : 1,
+                    borderColor: dragOver ? 'rgb(255, 255, 255)' : 'rgb(63, 63, 70)'
+                  }}
+                  className="w-full max-w-2xl h-64 border-2 border-dashed border-zinc-700 rounded-xl flex flex-col items-center justify-center p-6 bg-zinc-900/50 backdrop-blur-sm transition-colors cursor-pointer hover:border-white"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="w-12 h-12 text-zinc-500 mb-4" />
+                  <p className="text-zinc-300 text-lg mb-2">Drag and drop your video here</p>
+                  <p className="text-zinc-500">or click to browse</p>
+                </motion.div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="video/*"
+                  className="hidden"
+                  onChange={(e) => e.target.files?.[0] && handleFileUpload(e.target.files[0])}
+                />
+              </form>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="editor"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="relative rounded-xl overflow-hidden bg-zinc-900/50 backdrop-blur-sm p-4"
+            >
               <div
-                ref={boxRef}
-                className="border-2 border-white absolute cursor-move"
-                style={{
-                  left: `${position.x}px`,
-                  top: `${position.y}px`,
-                  width: `${size.width}px`,
-                  height: `${size.height}px`,
-                  boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)',
-                }}
-                onMouseDown={(e) => handleMouseDown(e, 'drag')}
+                className="relative"
+                onMouseMove={handleMouseMove}
+                onMouseUp={handleMouseUp}
+                onMouseLeave={handleMouseUp}
               >
-                {/* Resize handles */}
-                <Corner position={{ top: -2, left: -2 }} cursor="nw-resize" corner="topLeft" />
-                <Corner position={{ top: -2, right: -2 }} cursor="ne-resize" corner="topRight" />
-                <Corner position={{ bottom: -2, left: -2 }} cursor="sw-resize" corner="bottomLeft" />
-                <Corner position={{ bottom: -2, right: -2 }} cursor="se-resize" corner="bottomRight" />
+                <video
+                  ref={videoRef}
+                  controls
+                  className="w-full rounded-lg"
+                >
+                  <source src={`/uploads/${nameOfUploadedVideo}`} type="video/mp4" />
+                  Your browser does not support the video tag.
+                </video>
+
+                <div
+                  ref={boxRef}
+                  className="border-2 border-white absolute cursor-move"
+                  style={{
+                    left: `${position.x}px`,
+                    top: `${position.y}px`,
+                    width: `${size.width}px`,
+                    height: `${size.height}px`,
+                    boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.75)',
+                  }}
+                  onMouseDown={(e) => handleMouseDown(e, 'drag')}
+                >
+                  <Corner
+                    position={{ top: -2, left: -2 }}
+                    cursor="nw-resize"
+                    corner="topLeft"
+                    onMouseDown={handleMouseDown}
+                  />
+                  <Corner
+                    position={{ top: -2, right: -2 }}
+                    cursor="ne-resize"
+                    corner="topRight"
+                    onMouseDown={handleMouseDown}
+                  />
+                  <Corner
+                    position={{ bottom: -2, left: -2 }}
+                    cursor="sw-resize"
+                    corner="bottomLeft"
+                    onMouseDown={handleMouseDown}
+                  />
+                  <Corner
+                    position={{ bottom: -2, right: -2 }}
+                    cursor="se-resize"
+                    corner="bottomRight"
+                    onMouseDown={handleMouseDown}
+                  />
+                </div>
               </div>
-            </>
-          }
-        </div>
 
-        {
-          !isVideoUploaded &&
-          <input
-            type='submit'
-            className="mt-4 px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-semibold"
-            value='Upload'
-          />
-        }
-      </form>
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                className="mt-6 px-8 py-3 bg-white text-black rounded-lg font-medium flex items-center justify-center gap-2 w-full sm:w-auto mx-auto"
+                onClick={CropTheVideo}
+                disabled={isCropping}
+              >
+                <Crop className="w-5 h-5" />
+                {isCropping ? 'Processing...' : 'Crop Video'}
+              </motion.button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-      {
-        isVideoUploaded &&
-        <button
-          className="mt-4 px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-semibold"
-          onClick={CropTheVideo}
-        >CROP</button>
-      }
-      {
-        isCropped &&
-        <video
-          ref={videoRef}
-          controls
-          width={'auto'}
-          className='mt-32'
-        >
-          <source src={`/crops/${nameOfUploadedVideo}`} type="video/mp4" />
-          Your browser does not support the video tag.
-        </video>
-      }
+        {isCropped && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-12 p-6 bg-zinc-900/50 backdrop-blur-sm rounded-xl"
+          >
+            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+              <Check className="w-6 h-6 text-green-500" />
+              Cropped Video
+            </h2>
+            <video
+              controls
+              className="w-full rounded-lg"
+            >
+              <source src={`/crops/${nameOfUploadedVideo}`} type="video/mp4" />
+              Your browser does not support the video tag.
+            </video>
+          </motion.div>
+        )}
+      </div>
     </div>
   );
 }
+const Corner = ({ position, cursor, corner, onMouseDown }) => (
+  <motion.div
+    whileHover={{ scale: 1.2 }}
+    className="absolute w-4 h-4 border-2 border-white bg-black/50 rounded-full"
+    style={{ ...position, cursor }}
+    onMouseDown={(e) => onMouseDown(e, 'resize', corner)}
+  />
+);
